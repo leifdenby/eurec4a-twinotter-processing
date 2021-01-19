@@ -1,0 +1,132 @@
+#!/usr/bin/env python
+from pathlib import Path
+import xarray as xr
+import numpy as np
+import parse
+from datetime import datetime
+import cfunits
+
+import shutil
+
+DATAFILE_FORMAT = {
+    'MASIN': "core_masin_{date}_r{rev}_flight{flight_num}_{freq}hz.nc"
+}
+
+DATE_FORMAT = {
+    'MASIN': '%Y%m%d',
+    'EUREC4A': '%Y%m%d',  # note: there is ambiguity about this right now, might need to change to month before day
+}
+
+DATAFILE_PATH = "flight{flight_num}/{instrument}"
+# see https://github.com/eurec4a/meta/blob/master/naming_conventions.md
+# <campaign_id>_<project_id>_<platform_id>_<instrument_id>_<variable_id>_<time_id>_<version_id>.nc
+EUREC4A_FILE_FORMAT = "EUREC4A_{platform_id}_{instrument_id}_{time_id}_{version_id}.nc"
+EUREC4A_REF_TIME = datetime(year=2020, month=1, day=1, hour=0, minute=0, second=0)
+
+
+def _find_source_files(source_dir, instrument):
+    if instrument in DATAFILE_FORMAT:
+        # ignore the revision info in the file name
+        fn_pattern = DATAFILE_FORMAT[instrument].format(flight_num="*", date="*", rev="*", freq="*")
+        return list(source_dir.glob(fn_pattern))
+    else:
+        raise NotImplementedError(instrument)
+
+
+def main(source_dir, version, instrument, changelog, dry_run):
+    t_now = datetime.now()
+    files = _find_source_files(source_dir=source_dir, instrument=instrument)
+    print(f"Found {len(files)} files")
+
+    for filepath in files:
+        print(f"{filepath.name}:")
+        r = parse.parse(DATAFILE_FORMAT[instrument], filepath.name)
+        ds = xr.open_dataset(filepath, decode_times=False)
+
+        nc_rev = ds.attrs['Revision']
+        filename_rev = r['rev']
+        version_id = f"v{version}"
+        print(f"  exising revision info")
+        print(f"    filename: {filename_rev}")
+        print(f"    nc-attrs: {nc_rev}")
+        print(f"  new version: {version_id}")
+
+        if instrument == 'MASIN':
+            # correct o follow EUREC4A time reference
+            time_units = ds.Time.attrs['units']
+            nc_tref = cfunits.Units(time_units).reftime
+            t_offset = EUREC4A_REF_TIME - nc_tref
+            if dry_run:
+                print(f"  would adjust reference time to 2020-01-01 00:00:00, by {t_offset} ({t_offset.total_seconds()}s)")
+                print(f"  current time units: {time_units}")
+            else:
+                ds.Time.values -= int(t_offset.total_seconds())
+                ds.Time.attrs['units'] = 'seconds since 2020-01-01 00:00:00 +0000 UTC'
+
+            old_rev_info = f"filename: `{filename_rev}`, nc-attrs: `{nc_rev}`"
+            history_s = f"version created by Leif Denby {t_now.isoformat()}, existing revision info: {old_rev_info} from file: `{filepath.name}`"
+            if dry_run:
+                print(f"  would set ds.attrs['version'] = {version_id}")
+                print(f"  would set ds.attrs['history'] = {history_s}")
+                print(f"  would delete ds.attrs['Revision']")
+            else:
+                ds.attrs['version'] = version_id
+                ds.attrs['history'] = history_s
+                ds.attrs['contact'] = "Tom Lachlan-Cope <tlc@bas.ac.uk>"
+                ds.attrs['acknowledgement'] = "TO NOT USE FOR PUBLICATION! EARLY-RELEASE DATA"
+                del ds.attrs['Revision']
+
+            # fixes for masin data
+            for v in ds.data_vars:
+                if type(ds[v].attrs['units']) == np.int8 and ds[v].attrs['units'] == 1:
+                    # should be string, not a number
+                    ds[v].attrs['units'] = "1"
+            # make time the main coordinate
+            ds = ds.swap_dims(dict(data_point='Time'))
+
+            date_filename = datetime.strptime(r['date'], DATE_FORMAT[instrument])
+            time_id = date_filename.strftime(DATE_FORMAT['EUREC4A'])
+            platform_id = f"TO-{r['flight_num']}"
+            instrument_id = f"{instrument}-{r['freq']}Hz"
+            fn_new = EUREC4A_FILE_FORMAT.format(
+                platform_id=platform_id,
+                instrument_id=instrument_id,
+                time_id=time_id,
+                version_id=version_id,
+            )
+            p_out = Path(DATAFILE_PATH.format(instrument=instrument, flight_num=r['flight_num']))/fn_new
+            if dry_run:
+                print(f"  would write to {p_out}")
+            else:
+                ds.to_netcdf(p_out)
+        print(flush=True)
+
+    changelog_extra = f"""
+
+# {t_now.date().isoformat()} {version_id}
+{changelog}
+"""
+    if dry_run:
+        print(f"would add to CHANGELOG: {changelog_extra}")
+    else:
+        with open("CHANGELOG.txt", "a") as fh:
+            fh.write(changelog_extra)
+
+
+if __name__ == "__main__":
+    def version_str(s):
+        vals = s.split(".")
+        assert len(vals) == 2
+        [int(v) for v in vals]
+        return s
+
+    import argparse
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('source_dir', type=Path)
+    argparser.add_argument('--version', required=True, type=version_str)
+    argparser.add_argument('--instrument', required=True)
+    argparser.add_argument('--changelog', required=True)
+    argparser.add_argument('--dry-run', action='store_true', default=False)
+    args = argparser.parse_args()
+
+    main(**dict(vars(args)))

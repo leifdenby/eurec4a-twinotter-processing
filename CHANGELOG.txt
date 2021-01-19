@@ -1,0 +1,20 @@
+# 2020/02/07
+Added data for flights 330 through 333
+
+
+# 2020/02/11
+Added data for flights 334 through 342. MASIN data for flights 330 throgh 333
+updated to revision r004 (fix to wind data)
+
+
+# 2020/02/15
+Added data for flights 343 through 352.
+
+
+# 2020/03/03
+Updated MASIN file for flight 344 from Tom Lachlan-Cope, previous file
+contained error with flag for position and altitude.
+
+
+# 2020-07-24 v0.5
+fixed vertical winds
