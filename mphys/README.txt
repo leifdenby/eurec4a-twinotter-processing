@@ -54,3 +54,7 @@ output:
 
 - `processed/{source_date}/{instrument}/nc_output`
     CF-compliant offset files
+
+## Data source
+
+Gary Lloyd placed files on dropbox: https://www.dropbox.com/sh/trw7jjzk4z3evnx/AABLFiQPBKVNMnlj4dCC9UQ4a/eurek4a

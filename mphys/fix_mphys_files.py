@@ -50,9 +50,50 @@ PLOTS_PATH_ROOT = DATA_ROOT / "plots-fixing"
 PLOTS_PATH_ROOT.mkdir(exist_ok=True, parents=True)
 
 
+CEDA_NAME_MAPPING = dict(
+    cdp="man-cdp",
+    ds="man-2ds",
+    ffssp="man-ffssp",
+    hvps="ncas-hvps3-1",
+    masin="core-masin",
+)
+
+
 def make_mphys_path(source_date, flight_number, instrument, kind):
     return Path(
         f"{kind}/{source_date}/{instrument}/nc_output/to{flight_number}_{instrument}_r1.nc"
+    )
+
+
+def make_ceda_filepath(
+    source_date, flight_number, instrument, flight_date, ceda_revision
+):
+    """
+        <instrument>_bas-twinotter_YYYYMMDD_r<revision>_flight<number>[_<extra>].nc
+
+    <instrument>
+        will be "bas-core" for the core instrument data. For other instruments
+        we have a controlled vocab that we use to link up to the correct
+        instrument record in our catalogue. See
+        http://catalogue.ceda.ac.uk/listings/instr/ for the present listing. If
+        there is a new instrument to be added on there please let me know and
+        we can determine what abbreviation to use and capture details on a new
+        instrument list.
+    YYYYMMDD
+        start date of the flight in UTC
+    <number>
+        the flight number
+    _<extra>
+        is used to hold other relevant info as needed.. e.g. frequency of the
+        data in the files which I see from your GWS listing there are some
+        already in play.
+    """
+    instrument_ceda = CEDA_NAME_MAPPING[instrument]
+    extra = "1Hz"
+    p = Path(f"processed/{source_date}/to{flight_number}")
+    return (
+        p
+        / f"{instrument_ceda}_bas-twinotter_{flight_date:%Y%m%d}_r{ceda_revision}_flight{flight_number}_{extra}.nc"
     )
 
 
@@ -195,44 +236,46 @@ class EmptyFileException(Exception):
 
 
 def load_cffixed_mphys_ds(flight_number, source_date, instrument):
-    fn_src = make_mphys_path(
+    path_src = make_mphys_path(
         source_date=source_date,
         flight_number=flight_number,
         instrument=instrument,
         kind="source",
     )
-    fn_cffixed = make_mphys_path(
+    path_cffixed = make_mphys_path(
         source_date=source_date,
         flight_number=flight_number,
         instrument=instrument,
         kind="cf-fixed",
     )
 
-    if not fn_cffixed.exists():
-        ds = xr.open_dataset(fn_src)
+    if not path_cffixed.exists():
+        ds = xr.open_dataset(path_src)
         if not "qc_flag_ambient_particle_number_per_channel" in ds:
             # this file is empty...
             raise EmptyFileException("Empty file")
         ds = ds.copy()
         ds = cffix(ds)
-        fn_cffixed.parent.mkdir(exist_ok=True, parents=True)
-        ds.to_netcdf(fn_cffixed)
+        path_cffixed.parent.mkdir(exist_ok=True, parents=True)
+        ds.to_netcdf(path_cffixed)
 
         # it appears the filesystem on JASMIN is sometimes a bit slow, so let's
         # wait until the file appears
         while True:
-            if fn_cffixed.exists():
+            if path_cffixed.exists():
                 break
             sleep(0.5)
 
-        _check_file(str(fn_cffixed), show_warnings=False)
+        _check_file(str(path_cffixed), show_warnings=False)
 
-    return xr.open_dataset(fn_cffixed)
+    return xr.open_dataset(path_cffixed)
 
 
 def load_masin_ds(flight_number):
-    fn_masin = f"/home/users/lcdenby/eurec4auk/public/data/obs/MASIN/EUREC4A_TO-{flight_number}_MASIN-1Hz_*_v0.6.nc"
-    return xr.open_mfdataset(fn_masin).rename(dict(Time="time"))
+    path_masin = f"/home/users/lcdenby/eurec4auk/public/data/obs/MASIN/EUREC4A_TO-{flight_number}_MASIN-1Hz_*_v0.6.nc"
+    ds = xr.open_mfdataset(path_masin).rename(dict(Time="time"))
+    del(ds.time.encoding["units"])
+    return ds
 
 
 def extract_masin_window(ds_masin, dt_window, dt_fromtakeoff):
@@ -316,9 +359,9 @@ def plot_comparison_all(da_masin, **das_mphys):
     return fig, axes
 
 
-def getset_offset(flight_number, instrument, fn_offsets, new_value=None):
+def getset_offset(flight_number, instrument, path_offsets, new_value=None):
     "get/set the offset value by maintaining a csv-file as database of offsets"
-    if not Path(fn_offsets).exists():
+    if not Path(path_offsets).exists():
         if new_value:
             data = {flight_number: {instrument: new_value}}
         else:
@@ -326,12 +369,12 @@ def getset_offset(flight_number, instrument, fn_offsets, new_value=None):
         df = pd.DataFrame(data.values(), index=data.keys())
         df.index.name = "flight_number"
     else:
-        df = pd.read_csv(fn_offsets, comment="#", index_col="flight_number")
+        df = pd.read_csv(path_offsets, comment="#", index_col="flight_number")
         if new_value:
             df.loc[flight_number, instrument] = new_value
 
     if new_value is not None:
-        with open(fn_offsets, "w") as fh:
+        with open(path_offsets, "w") as fh:
             fh.write(
                 "# Timing offsets (in seconds) for microphysics instruments computed\n"
             )
@@ -344,6 +387,14 @@ def getset_offset(flight_number, instrument, fn_offsets, new_value=None):
 
     try:
         val = df.loc[flight_number, instrument]
+        if val == "exclude":
+            return val
+
+        try:
+            return int(val)
+        except ValueError:
+            pass
+
         if np.isnan(val):
             return None
         return int(val)
@@ -391,8 +442,8 @@ def _make_comparison_plots(
     else:
         instrument = "all"
     plot_id = f"TO{flight_number}.MASIN_vs_{instrument}"
-    fn_comparison = f"{plot_id}.{kind}.png"
-    fn_comparison_zoom = f"{plot_id}.{kind}.zoom.png"
+    path_comparison = f"{plot_id}.{kind}.png"
+    path_comparison_zoom = f"{plot_id}.{kind}.zoom.png"
 
     plots_path.mkdir(exist_ok=True, parents=True)
 
@@ -402,17 +453,17 @@ def _make_comparison_plots(
         f"Flight number {flight_number}, original data. MASIN, {', '.join(avail_instruments)}",
         y=1.05,
     )
-    fig.savefig(PLOTS_PATH_ROOT / fn_comparison, bbox_inches="tight")
+    fig.savefig(PLOTS_PATH_ROOT / path_comparison, bbox_inches="tight")
     t_center = da_masin_window.time.min() + DT_WINDOW
     for ax in axes:
         ax.set_xlim(t_center - DT_WINDOW_ZOOM, t_center + DT_WINDOW_ZOOM)
-    fig.savefig(plots_path / fn_comparison_zoom, bbox_inches="tight")
+    fig.savefig(plots_path / path_comparison_zoom, bbox_inches="tight")
     plt.close(fig)
     del fig
 
 
 def _calc_offsets_for_flight_instrument(
-    ds_masin, flight_number, instrument, fn_offsets
+    ds_masin, flight_number, instrument, path_offsets
 ):
     ds_mphys = load_cffixed_mphys_ds(flight_number=flight_number, instrument=instrument)
     if not MPHYS_VAR in ds_mphys:
@@ -429,7 +480,7 @@ def _calc_offsets_for_flight_instrument(
     )
 
     plot_id = f"TO{flight_number}.MASIN_vs_{instrument}"
-    fn_correlation = f"{plot_id}.{MASIN_VAR}_npart_correll.png"
+    path_correlation = f"{plot_id}.{MASIN_VAR}_npart_correll.png"
 
     _make_comparison_plots(
         kind="original",
@@ -444,7 +495,7 @@ def _calc_offsets_for_flight_instrument(
         da2=da_mphys_window.interp_like(da_masin_window),
         show_plot=True,
     )
-    fig.savefig(PLOTS_PATH_ROOT / fn_correlation)
+    fig.savefig(PLOTS_PATH_ROOT / path_correlation)
     plt.close(fig)
     del fig
 
@@ -466,11 +517,11 @@ def _calc_offsets_for_flight_instrument(
         flight_number=flight_number,
         instrument=instrument,
         new_value=offset,
-        fn_offsets=fn_offsets,
+        path_offsets=path_offsets,
     )
 
 
-def calc_offsets(source_date, fn_offsets, only__compute_missing=True):
+def calc_offsets(source_date, path_offsets, only__compute_missing=True):
     instruments = ALL_INSTRUMENTS
     for flight_number in tqdm(FLIGHT_NUMBERS, desc="flight"):
         ds_masin = load_masin_ds(flight_number=flight_number)
@@ -480,7 +531,7 @@ def calc_offsets(source_date, fn_offsets, only__compute_missing=True):
                 offset = getset_offset(
                     flight_number=flight_number,
                     instrument=instrument,
-                    fn_offsets=fn_offsets,
+                    path_offsets=path_offsets,
                 )
                 if only__compute_missing and offset is not None:
                     continue
@@ -489,7 +540,7 @@ def calc_offsets(source_date, fn_offsets, only__compute_missing=True):
                     ds_masin=ds_masin,
                     flight_number=flight_number,
                     instrument=instrument,
-                    fn_offsets=fn_offsets,
+                    path_offsets=path_offsets,
                 )
             except (FileNotFoundError, EmptyFileException) as ex:
                 continue
@@ -499,14 +550,16 @@ def calc_offsets(source_date, fn_offsets, only__compute_missing=True):
 
 
 def process_with_selected_offsets(
-    fn_offsets, offset_source, instruments, source_date, save_processed_files=False
+    path_offsets, offset_source, instruments, source_date, ceda_revision=None
 ):
 
     # make plots with the best offset
     for flight_number in tqdm(FLIGHT_NUMBERS, desc="flight"):
         ds_masin = load_masin_ds(flight_number=flight_number)
         offset = getset_offset(
-            flight_number=flight_number, instrument=offset_source, fn_offsets=fn_offsets
+            flight_number=flight_number,
+            instrument=offset_source,
+            path_offsets=path_offsets,
         )
         if offset in [None, "exclude"]:
             print(f"skipping {flight_number}, offset: {offset}")
@@ -573,15 +626,19 @@ def process_with_selected_offsets(
                 **das_mphys_offset_window,
             )
 
-            for instrument, ds_mphys in datasets.items():
-                fn_processed = make_mphys_path(
-                    source_date=source_date,
-                    flight_number=flight_number,
-                    instrument=instrument,
-                    kind="processed",
-                )
-                fn_processed.parent.mkdir(exist_ok=True, parents=True)
-                ds_mphys.to_netcdf(fn_processed)
+            if ceda_revision is not None:
+                datasets["masin"] = load_masin_ds(flight_number)
+                for instrument, ds in datasets.items():
+                    flight_date = ds.time.dt.date.data[0]
+                    path_processed = make_ceda_filepath(
+                        source_date=source_date,
+                        flight_number=flight_number,
+                        instrument=instrument,
+                        flight_date=flight_date,
+                        ceda_revision=ceda_revision,
+                    )
+                    path_processed.parent.mkdir(exist_ok=True, parents=True)
+                    ds.to_netcdf(path_processed)
 
 
 def optional_debugging(with_debugger):
@@ -613,20 +670,22 @@ def main():
     argparser.add_argument("offset_fn")
     argparser.add_argument("--calc", default=False, action="store_true")
     argparser.add_argument("--process-with", default=None)
+    argparser.add_argument("--ceda-revision", default=None)
     argparser.add_argument("--debug", default=False, action="store_true")
 
     args = argparser.parse_args()
 
     with optional_debugging(with_debugger=args.debug):
         if args.calc:
-            calc_offsets(source_date=args.source_date, fn_offsets=args.offset_fn)
+            calc_offsets(source_date=args.source_date, path_offsets=args.offset_fn)
 
         if args.process_with:
             process_with_selected_offsets(
                 source_date=args.source_date,
-                fn_offsets=args.offset_fn,
+                path_offsets=args.offset_fn,
                 offset_source=args.process_with,
                 instruments=ALL_INSTRUMENTS,
+                ceda_revision=args.ceda_revision,
             )
 
     if not args.calc and not args.process_with:
