@@ -1,0 +1,31 @@
+# Timing offsets (in seconds) for microphysics instruments computed,,,,,,
+# using auto-correlation with MASIN vertical velocity,,,,,,
+# for observations made during the 2020 EUREC4A campaign,,,,,,
+# 2021-10-01T15:03:16.840875, Leif Denby, University of Leeds,,,,
+# v1 timings added 21/10/2021 09:44",,,,,,
+flight_number,ffssp,hvps,cdp,ds,selected_leif,v1
+330,-15,-300,,,-15,-15
+331,-16,-224,,,-16,-16
+332,,-8,-15,,-15,-15
+333,,-231,-241,,n/a,exclude
+334,,-92,268,267,n/a,-16
+335,,,-118,,n/a,-16
+336,,-163,-14,-13,-13,-13
+337,,275,-13,-13,-13,-13
+339,,-171,-178,-16,-16,-16
+340,,152,-14,-14,-14,-14
+341,-59,-53,-56,-57,n/a,-16
+342,-74,-25,-16,-59,n/a,-16
+343,15,65,40,15,-13,-13
+344,-18,-239,,-18,-18,-18
+345,-14,-31,-14,,-14,-14
+346,-14,-61,-120,-14,-14,-14
+347,-13,-135,-15,-14,-13,-13
+348,192,295,190,190,n/a,exclude
+349,-15,-26,-17,-15,-15,-15
+350,-14,70,-14,-14,-14,-14
+351,48,7,81,48,n/a,-14
+352,-297,-281,-296,-274,n/a,-16
+353,-54,,-16,-13,-16,-16
+354,-300,,-15,-14,,-15
+# v1: offsets for most flights created from autocorrelation, remainder hand-picked by Alan (email on 6/10/2021)","offsets for most flights created from autocorrelation, remainder hand-picked by Alan (email on 6/10/2021)"
