@@ -41,7 +41,7 @@ DT_WINDOW = np.timedelta64(5, "m")
 # +- time-span of zoomed window plot
 DT_WINDOW_ZOOM = np.timedelta64(30, "s")
 # time after take-off to exclude when finding maximum vertical velocity for MASIN data
-DT_FROM_TAKEOFF = np.timedelta64(60, "m")
+DT_FROM_TAKEOFFLANDING = np.timedelta64(60, "m")
 ALL_INSTRUMENTS = ["cdp", "ffssp", "ds", "hvps"]
 
 DATA_ROOT = Path(".")
@@ -60,8 +60,10 @@ CEDA_NAME_MAPPING = dict(
 
 
 def make_mphys_path(source_date, flight_number, instrument, kind):
-    return Path(
-        f"{kind}/{source_date}/{instrument}/nc_output/to{flight_number}_{instrument}_r1.nc"
+    path_root = Path("/gws/nopw/j04/eurec4auk/data/obs/mphys")
+    return (
+        path_root
+        / f"{kind}/{source_date}/{instrument}/nc_output/to{flight_number}_{instrument}_r1.nc"
     )
 
 
@@ -272,14 +274,19 @@ def load_cffixed_mphys_ds(flight_number, source_date, instrument):
 
 
 def load_masin_ds(flight_number):
-    path_masin = f"/home/users/lcdenby/eurec4auk/public/data/obs/MASIN/EUREC4A_TO-{flight_number}_MASIN-1Hz_*_v0.6.nc"
+    path_masin = f"/gws/nopw/j04/eurec4auk/public/data/obs/MASIN/EUREC4A_TO-{flight_number}_MASIN-1Hz_*_v0.6.nc"
     ds = xr.open_mfdataset(path_masin).rename(dict(Time="time"))
-    del(ds.time.encoding["units"])
+    del ds.time.encoding["units"]
     return ds
 
 
-def extract_masin_window(ds_masin, dt_window, dt_fromtakeoff):
-    ds_ = ds_masin.sel(time=slice(ds_masin.time.min() + dt_fromtakeoff, None))
+def extract_masin_window(ds_masin, dt_window, dt_fromtakeofflanding):
+    ds_ = ds_masin.sel(
+        time=slice(
+            ds_masin.time.min() + dt_fromtakeofflanding,
+            ds_masin.time.max() - dt_fromtakeofflanding,
+        )
+    )
     tn_w_max = ds_.W_OXTS.argmax(dim="time").compute().data
     t_w_max = ds_.isel(time=tn_w_max).time
 
@@ -403,7 +410,7 @@ def getset_offset(flight_number, instrument, path_offsets, new_value=None):
 
 
 def extract_over_window(
-    ds_mphys, mphys_var, ds_masin, masin_var, dt_window, dt_fromtakeoff
+    ds_mphys, mphys_var, ds_masin, masin_var, dt_window, dt_fromtakeofflanding
 ):
     # first we need to ensure that the MASIN data we examine for
     # finding the max vertical velocity actually is within the time
@@ -418,7 +425,9 @@ def extract_over_window(
     ds_masin_with_mphys = ds_masin.sel(time=slice(*da_mphys_data_trange))
 
     ds_masin_window = extract_masin_window(
-        ds_masin=ds_masin_with_mphys, dt_window=dt_window, dt_fromtakeoff=dt_fromtakeoff
+        ds_masin=ds_masin_with_mphys,
+        dt_window=dt_window,
+        dt_fromtakeofflanding=dt_fromtakeofflanding,
     )
     da_masin_window = ds_masin_window[masin_var]
 
@@ -474,9 +483,11 @@ def _make_comparison_plots(
 
 
 def _calc_offsets_for_flight_instrument(
-    ds_masin, flight_number, instrument, path_offsets
+    ds_masin, flight_number, instrument, path_offsets, source_date
 ):
-    ds_mphys = load_cffixed_mphys_ds(flight_number=flight_number, instrument=instrument)
+    ds_mphys = load_cffixed_mphys_ds(
+        source_date=source_date, flight_number=flight_number, instrument=instrument
+    )
     if not MPHYS_VAR in ds_mphys:
         # some mphys files don't contain any data...
         return None
@@ -487,7 +498,7 @@ def _calc_offsets_for_flight_instrument(
         masin_var=MASIN_VAR,
         ds_masin=ds_masin,
         dt_window=DT_WINDOW,
-        dt_fromtakeoff=DT_FROM_TAKEOFF,
+        dt_fromtakeofflanding=DT_FROM_TAKEOFFLANDING,
     )
 
     plot_id = f"TO{flight_number}.MASIN_vs_{instrument}"
@@ -505,7 +516,7 @@ def _calc_offsets_for_flight_instrument(
         da2=da_mphys_window.interp_like(da_masin_window),
         show_plot=True,
     )
-    fig.savefig(PLOTS_PATH_ROOT / path_correlation)
+    fig.savefig(PLOTS_PATH_ROOT / "calc" / path_correlation)
     plt.close(fig)
     del fig
 
@@ -531,7 +542,7 @@ def _calc_offsets_for_flight_instrument(
     )
 
 
-def calc_offsets(source_date, path_offsets, flight_numbers, only__compute_missing=True):
+def calc_offsets(source_date, path_offsets, flight_numbers, only_compute_missing=True):
     instruments = ALL_INSTRUMENTS
     for flight_number in tqdm(flight_numbers, desc="flight"):
         ds_masin = load_masin_ds(flight_number=flight_number)
@@ -543,16 +554,25 @@ def calc_offsets(source_date, path_offsets, flight_numbers, only__compute_missin
                     instrument=instrument,
                     path_offsets=path_offsets,
                 )
-                if only__compute_missing and offset is not None:
+                if only_compute_missing and offset is not None:
                     continue
 
                 _calc_offsets_for_flight_instrument(
                     ds_masin=ds_masin,
+                    source_date=source_date,
                     flight_number=flight_number,
                     instrument=instrument,
                     path_offsets=path_offsets,
                 )
-            except (FileNotFoundError, EmptyFileException) as ex:
+            except FileNotFoundError as ex:
+                print(
+                    f"Input file for flight {flight_number} instrument {instrument} not found"
+                )
+                continue
+            except EmptyFileException as ex:
+                print(
+                    f"Input file for flight {flight_number} instrument {instrument} is empty"
+                )
                 continue
             except Exception as ex:
                 print(f"There was an issue with TO{flight_number} {instrument}")
@@ -560,7 +580,12 @@ def calc_offsets(source_date, path_offsets, flight_numbers, only__compute_missin
 
 
 def process_with_selected_offsets(
-    path_offsets, offset_source, instruments, source_date, flight_numbers, ceda_revision=None
+    path_offsets,
+    offset_source,
+    instruments,
+    source_date,
+    flight_numbers,
+    ceda_revision=None,
 ):
 
     # make plots with the best offset
@@ -573,7 +598,7 @@ def process_with_selected_offsets(
         )
         if offset in [None, "exclude"]:
             print(f"skipping {flight_number}, offset: {offset}")
-            continue
+            instruments = []
 
         datasets = {}
         for instrument in tqdm(instruments, desc="inst", leave=False):
@@ -592,7 +617,7 @@ def process_with_selected_offsets(
                 masin_var=MASIN_VAR,
                 ds_masin=ds_masin,
                 dt_window=DT_WINDOW,
-                dt_fromtakeoff=DT_FROM_TAKEOFF,
+                dt_fromtakeofflanding=DT_FROM_TAKEOFFLANDING,
             )
 
             das_mphys_window = {}
@@ -646,7 +671,8 @@ def process_with_selected_offsets(
                     ceda_revision=ceda_revision,
                 )
                 path_processed.parent.mkdir(exist_ok=True, parents=True)
-                ds.to_netcdf(path_processed)
+                if not path_processed.exists():
+                    ds.to_netcdf(path_processed)
 
 
 def optional_debugging(with_debugger):
@@ -670,23 +696,33 @@ def optional_debugging(with_debugger):
 
 
 def main():
-    only__compute_missing = True
+    only_compute_missing = True
     import argparse
 
     argparser = argparse.ArgumentParser()
-    argparser.add_argument("source_date")
-    argparser.add_argument("offset_fn")
+    argparser.add_argument(
+        "source_date", help="date-string describing when the source data is from"
+    )
+    argparser.add_argument("offset_fn", help="filename to save offsets to")
     argparser.add_argument("--calc", default=False, action="store_true")
+    argparser.add_argument("--recalc", default=False, action="store_true")
     argparser.add_argument("--process-with", default=None)
     argparser.add_argument("--ceda-revision", default=None)
     argparser.add_argument("--debug", default=False, action="store_true")
-    argparser.add_argument("--flight-numbers", default=ALL_FLIGHT_NUMBERS, nargs="+", type=int)
+    argparser.add_argument(
+        "--flight-numbers", default=ALL_FLIGHT_NUMBERS, nargs="+", type=int
+    )
 
     args = argparser.parse_args()
 
     with optional_debugging(with_debugger=args.debug):
         if args.calc:
-            calc_offsets(source_date=args.source_date, path_offsets=args.offset_fn, flight_numbers=args.flight_numbers)
+            calc_offsets(
+                source_date=args.source_date,
+                path_offsets=args.offset_fn,
+                flight_numbers=args.flight_numbers,
+                only_compute_missing=not args.recalc,
+            )
 
         if args.process_with:
             process_with_selected_offsets(
@@ -700,7 +736,7 @@ def main():
 
     if not args.calc and not args.process_with:
         print("please set one of --calc or --process-with")
-        argparser.help()
+        argparser.print_help()
 
 
 if __name__ == "__main__":
