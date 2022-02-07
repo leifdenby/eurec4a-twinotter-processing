@@ -284,17 +284,30 @@ def load_masin_ds(flight_number, version="0.7"):
     return ds
 
 
-def extract_masin_window(ds_masin, dt_window, dt_fromtakeofflanding):
-    ds_ = ds_masin.sel(
-        time=slice(
-            ds_masin.time.min() + dt_fromtakeofflanding,
-            ds_masin.time.max() - dt_fromtakeofflanding,
+def find_best_window(ds_masin, da_mphys, dt_window, dt_fromtakeofflanding, method="particle_count_max"):
+    if method == "vertical_velocity_max":
+        ds_ = ds_masin.sel(
+            time=slice(
+                ds_masin.time.min() + dt_fromtakeofflanding,
+                ds_masin.time.max() - dt_fromtakeofflanding,
+            )
         )
-    )
-    tn_w_max = ds_.W_OXTS.argmax(dim="time").compute().data
-    t_w_max = ds_.isel(time=tn_w_max).time
+        tn_w_max = ds_.W_OXTS.argmax(dim="time").compute().data
+        t0 = ds_.isel(time=tn_w_max).time
+    elif method == "particle_count_max":
+        da_ = da_mphys.sel(
+            time=slice(
+                da_mphys.time.min() + dt_fromtakeofflanding,
+                da_mphys.time.max() - dt_fromtakeofflanding,
+            )
+        )
+        da_resampled = da_.resample(time="120s").sum() 
+        tn_n_max = da_resampled.argmax(dim="time").compute().data
+        t0 = da_resampled.isel(time=tn_n_max).time
+    else:
+        raise NotImplementedError(method)
 
-    return ds_masin.sel(time=slice(t_w_max - dt_window, t_w_max + dt_window))
+    return (t0 - dt_window, t0 + dt_window)
 
 
 def calc_offset(da1, da2, show_plot=False):
@@ -416,6 +429,9 @@ def getset_offset(flight_number, instrument, path_offsets, new_value=None):
 def extract_over_window(
     ds_mphys, mphys_var, ds_masin, masin_var, dt_window, dt_fromtakeofflanding
 ):
+    # sum across all size bins so that we get the total count with time
+    da_mphys = ds_mphys[mphys_var].sum(dim="index")
+
     # first we need to ensure that the MASIN data we examine for
     # finding the max vertical velocity actually is within the time
     # range where we have mphys data
@@ -428,18 +444,16 @@ def extract_over_window(
     )
     ds_masin_with_mphys = ds_masin.sel(time=slice(*da_mphys_data_trange))
 
-    ds_masin_window = extract_masin_window(
+    window_trange = find_best_window(
         ds_masin=ds_masin_with_mphys,
+        da_mphys=da_mphys,
         dt_window=dt_window,
         dt_fromtakeofflanding=dt_fromtakeofflanding,
     )
+    ds_masin_window = ds_masin.sel(time=slice(*window_trange))
     da_masin_window = ds_masin_window[masin_var]
 
-    ds_mphys_window = ds_mphys.sel(
-        time=slice(ds_masin_window.time.min(), ds_masin_window.time.max())
-    )
-
-    da_mphys_window = ds_mphys_window[mphys_var].sum(dim="index")
+    da_mphys_window = da_mphys.sel(time=slice(*window_trange))
 
     return da_masin_window, da_mphys_window
 
@@ -546,9 +560,9 @@ def _calc_offsets_for_flight_instrument(
     )
 
 
-def calc_offsets(source_date, path_offsets, flight_numbers, instruments, only_compute_missing=True):
+def calc_offsets(source_date, path_offsets, flight_numbers, instruments, masin_version, only_compute_missing=True):
     for flight_number in tqdm(flight_numbers, desc="flight"):
-        ds_masin = load_masin_ds(flight_number=flight_number)
+        ds_masin = load_masin_ds(flight_number=flight_number, version=masin_version)
         ds_masin.attrs["flight_number"] = flight_number
         for instrument in tqdm(instruments, desc="inst", leave=False):
             try:
@@ -588,12 +602,13 @@ def process_with_selected_offsets(
     instruments,
     source_date,
     flight_numbers,
+    masin_version,
     ceda_revision=None,
 ):
 
     # make plots with the best offset
     for flight_number in tqdm(flight_numbers, desc="flight"):
-        ds_masin = load_masin_ds(flight_number=flight_number)
+        ds_masin = load_masin_ds(flight_number=flight_number, version=masin_version)
         offset = getset_offset(
             flight_number=flight_number,
             instrument=offset_source,
@@ -663,7 +678,7 @@ def process_with_selected_offsets(
             )
 
         if ceda_revision is not None:
-            datasets["masin"] = load_masin_ds(flight_number)
+            datasets["masin"] = load_masin_ds(flight_number, version=masin_version)
             for instrument, ds in datasets.items():
                 flight_date = ds.time.dt.date.data[0]
                 path_processed = make_ceda_filepath(
@@ -707,9 +722,10 @@ def main():
         "source_date", help="date-string describing when the source data is from"
     )
     argparser.add_argument("offset_fn", help="filename to save offsets to")
-    argparser.add_argument("--calc", default=False, action="store_true")
-    argparser.add_argument("--recalc", default=False, action="store_true")
-    argparser.add_argument("--process-with", default=None)
+    argparser.add_argument("--calc", default=False, action="store_true", help="calculate offsets, one for each instrument, in offsets file")
+    argparser.add_argument("--recalc", default=False, action="store_true", help="recalculate offsets if they already exist")
+    argparser.add_argument("--process-with", default=None, help="process with offsets from column with this name in offsets file")
+    argparser.add_argument("--masin-version", default="0.7", help="version of processed MASIN data to use")
     argparser.add_argument("--ceda-revision", default=None)
     argparser.add_argument("--debug", default=False, action="store_true")
     argparser.add_argument(
@@ -718,7 +734,7 @@ def main():
 
     args = argparser.parse_args()
 
-    instruments = ["cdp"] # ALL_INSTRUMENTS
+    instruments = ALL_INSTRUMENTS
 
     with optional_debugging(with_debugger=args.debug):
         if args.calc:
@@ -727,6 +743,7 @@ def main():
                 path_offsets=args.offset_fn,
                 flight_numbers=args.flight_numbers,
                 only_compute_missing=not args.recalc,
+                masin_version=args.masin_version,
                 instruments=instruments,
             )
 
@@ -737,6 +754,7 @@ def main():
                 offset_source=args.process_with,
                 instruments=instruments,
                 ceda_revision=args.ceda_revision,
+                masin_version=args.masin_version,
                 flight_numbers=args.flight_numbers,
             )
 
