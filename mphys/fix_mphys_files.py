@@ -36,6 +36,9 @@ from tqdm import tqdm
 ALL_FLIGHT_NUMBERS = range(330, 355)
 MASIN_VAR = "W_OXTS"
 MPHYS_VAR = "ambient_particle_number_per_channel"
+HANDPICKED_WINDOW_CENTERS = {
+    343: np.datetime64("2020-02-07T14:48"),
+}
 # window over which to compute correlation and create plots
 DT_WINDOW = np.timedelta64(5, "m")
 # +- time-span of zoomed window plot
@@ -253,7 +256,26 @@ def load_cffixed_mphys_ds(flight_number, source_date, instrument):
 
     if not path_cffixed.exists():
         ds = xr.open_dataset(path_src)
-        assert np.unique(ds.time, return_counts=True)[1].max() == 1
+        if np.unique(ds.time, return_counts=True)[1].max() != 1:
+            # handle timesteps with more than one value... (this really shouldn't happen!)
+            t_unique, t_idxs, t_counts = np.unique(ds.time, return_counts=True, return_index=True)
+            assert len(t_unique) == len(t_idxs)
+            # `t_idxs` contains for element with the unique value
+            ds_unique = ds.isel(time=t_idxs)
+
+            # go through each of the times that have more than one value and
+            # for each variable find the mean value across all of the duplicate
+            # values
+            for t_ in t_unique[t_counts > 1]:
+                for v in ds.data_vars:
+                    if not "time" in ds[v].dims:
+                        continue
+                    ds_unique[v].sel(time=t_).values = ds[v].sel(time=t_).mean(dim="time")
+            ds = ds_unique
+        
+        if np.unique(ds.time, return_counts=True)[1].max() != 1:
+            raise Exception("non-unique time-values haven't been dealt with")
+
         if not "qc_flag_ambient_particle_number_per_channel" in ds:
             # this file is empty...
             raise EmptyFileException("Empty file")
@@ -284,7 +306,7 @@ def load_masin_ds(flight_number, version="0.7"):
     return ds
 
 
-def find_best_window(ds_masin, da_mphys, dt_window, dt_fromtakeofflanding, method="particle_count_max"):
+def find_best_window(ds_masin, da_mphys, dt_window, dt_fromtakeofflanding, method):
     if method == "vertical_velocity_max":
         ds_ = ds_masin.sel(
             time=slice(
@@ -294,6 +316,22 @@ def find_best_window(ds_masin, da_mphys, dt_window, dt_fromtakeofflanding, metho
         )
         tn_w_max = ds_.W_OXTS.argmax(dim="time").compute().data
         t0 = ds_.isel(time=tn_w_max).time
+    elif method == "vertical_velocity_max_above_cloudbase":
+        ds_ = ds_masin.sel(
+            time=slice(
+                ds_masin.time.min() + dt_fromtakeofflanding,
+                ds_masin.time.max() - dt_fromtakeofflanding,
+            )
+        )
+        ds_ = ds_.where(ds_.ALT_OXTS > 600, drop=True)
+        tn_w_max = ds_.W_OXTS.argmax(dim="time").compute().data
+        t0 = ds_.isel(time=tn_w_max).time
+    elif method == "handpicked_value":
+        flight_number = int(ds_masin.flight_number)
+        if not flight_number in HANDPICKED_WINDOW_CENTERS:
+            raise NotImplementedError(flight_number)
+        else:
+            t0 = HANDPICKED_WINDOW_CENTERS[flight_number]
     elif method == "particle_count_max":
         da_ = da_mphys.sel(
             time=slice(
@@ -304,6 +342,7 @@ def find_best_window(ds_masin, da_mphys, dt_window, dt_fromtakeofflanding, metho
         da_resampled = da_.resample(time="120s").sum() 
         tn_n_max = da_resampled.argmax(dim="time").compute().data
         t0 = da_resampled.isel(time=tn_n_max).time
+        print(t0)
     else:
         raise NotImplementedError(method)
 
@@ -427,7 +466,7 @@ def getset_offset(flight_number, instrument, path_offsets, new_value=None):
 
 
 def extract_over_window(
-    ds_mphys, mphys_var, ds_masin, masin_var, dt_window, dt_fromtakeofflanding
+    ds_mphys, mphys_var, ds_masin, masin_var, dt_window, dt_fromtakeofflanding, window_method
 ):
     # sum across all size bins so that we get the total count with time
     da_mphys = ds_mphys[mphys_var].sum(dim="index")
@@ -449,6 +488,7 @@ def extract_over_window(
         da_mphys=da_mphys,
         dt_window=dt_window,
         dt_fromtakeofflanding=dt_fromtakeofflanding,
+        method=window_method,
     )
     ds_masin_window = ds_masin.sel(time=slice(*window_trange))
     da_masin_window = ds_masin_window[masin_var]
@@ -501,7 +541,7 @@ def _make_comparison_plots(
 
 
 def _calc_offsets_for_flight_instrument(
-    ds_masin, flight_number, instrument, path_offsets, source_date
+    ds_masin, flight_number, instrument, path_offsets, source_date, window_method
 ):
     ds_mphys = load_cffixed_mphys_ds(
         source_date=source_date, flight_number=flight_number, instrument=instrument
@@ -517,6 +557,7 @@ def _calc_offsets_for_flight_instrument(
         ds_masin=ds_masin,
         dt_window=DT_WINDOW,
         dt_fromtakeofflanding=DT_FROM_TAKEOFFLANDING,
+        window_method=window_method,
     )
 
     plot_id = f"TO{flight_number}.MASIN_vs_{instrument}"
@@ -560,7 +601,7 @@ def _calc_offsets_for_flight_instrument(
     )
 
 
-def calc_offsets(source_date, path_offsets, flight_numbers, instruments, masin_version, only_compute_missing=True):
+def calc_offsets(source_date, path_offsets, flight_numbers, instruments, masin_version, window_method, only_compute_missing=True):
     for flight_number in tqdm(flight_numbers, desc="flight"):
         ds_masin = load_masin_ds(flight_number=flight_number, version=masin_version)
         ds_masin.attrs["flight_number"] = flight_number
@@ -580,6 +621,7 @@ def calc_offsets(source_date, path_offsets, flight_numbers, instruments, masin_v
                     flight_number=flight_number,
                     instrument=instrument,
                     path_offsets=path_offsets,
+                    window_method=window_method,
                 )
             except FileNotFoundError as ex:
                 print(
@@ -603,6 +645,7 @@ def process_with_selected_offsets(
     source_date,
     flight_numbers,
     masin_version,
+    window_method,
     ceda_revision=None,
 ):
 
@@ -636,6 +679,7 @@ def process_with_selected_offsets(
                 ds_masin=ds_masin,
                 dt_window=DT_WINDOW,
                 dt_fromtakeofflanding=DT_FROM_TAKEOFFLANDING,
+                window_method=window_method,
             )
 
             das_mphys_window = {}
@@ -731,10 +775,20 @@ def main():
     argparser.add_argument(
         "--flight-numbers", default=ALL_FLIGHT_NUMBERS, nargs="+", type=int
     )
+    argparser.add_argument(
+        "--instruments", default=ALL_INSTRUMENTS, nargs="+", type=str
+    )
+    argparser.add_argument(
+        "--window-method", default="vertical_velocity_max", type=str, choices=[
+        "vertical_velocity_max",
+        "vertical_velocity_max_above_cloudbase",
+        "handpicked_value",
+        "particle_count_max",
+    ])
 
     args = argparser.parse_args()
 
-    instruments = ALL_INSTRUMENTS
+    instruments = args.instruments
 
     with optional_debugging(with_debugger=args.debug):
         if args.calc:
@@ -745,6 +799,7 @@ def main():
                 only_compute_missing=not args.recalc,
                 masin_version=args.masin_version,
                 instruments=instruments,
+                window_method=args.window_method,
             )
 
         if args.process_with:
@@ -756,6 +811,7 @@ def main():
                 ceda_revision=args.ceda_revision,
                 masin_version=args.masin_version,
                 flight_numbers=args.flight_numbers,
+                window_method=args.window_method,
             )
 
     if not args.calc and not args.process_with:
