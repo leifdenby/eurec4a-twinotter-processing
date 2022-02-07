@@ -253,6 +253,7 @@ def load_cffixed_mphys_ds(flight_number, source_date, instrument):
 
     if not path_cffixed.exists():
         ds = xr.open_dataset(path_src)
+        assert np.unique(ds.time, return_counts=True)[1].max() == 1
         if not "qc_flag_ambient_particle_number_per_channel" in ds:
             # this file is empty...
             raise EmptyFileException("Empty file")
@@ -270,13 +271,16 @@ def load_cffixed_mphys_ds(flight_number, source_date, instrument):
 
         _check_file(str(path_cffixed), show_warnings=False)
 
-    return xr.open_dataset(path_cffixed)
+    ds_mphys = xr.open_dataset(path_cffixed)
+    assert np.unique(ds_mphys.time, return_counts=True)[1].max() == 1
+    return ds_mphys
 
 
-def load_masin_ds(flight_number):
-    path_masin = f"/gws/nopw/j04/eurec4auk/public/data/obs/MASIN/EUREC4A_TO-{flight_number}_MASIN-1Hz_*_v0.6.nc"
+def load_masin_ds(flight_number, version="0.7"):
+    path_masin = f"/gws/nopw/j04/eurec4auk/public/data/obs/MASIN/EUREC4A_TO-{flight_number}_MASIN-1Hz_*_v{version}.nc"
     ds = xr.open_mfdataset(path_masin).rename(dict(Time="time"))
     del ds.time.encoding["units"]
+    assert np.unique(ds.time, return_counts=True)[1].max() == 1
     return ds
 
 
@@ -542,8 +546,7 @@ def _calc_offsets_for_flight_instrument(
     )
 
 
-def calc_offsets(source_date, path_offsets, flight_numbers, only_compute_missing=True):
-    instruments = ALL_INSTRUMENTS
+def calc_offsets(source_date, path_offsets, flight_numbers, instruments, only_compute_missing=True):
     for flight_number in tqdm(flight_numbers, desc="flight"):
         ds_masin = load_masin_ds(flight_number=flight_number)
         ds_masin.attrs["flight_number"] = flight_number
@@ -715,6 +718,8 @@ def main():
 
     args = argparser.parse_args()
 
+    instruments = ["cdp"] # ALL_INSTRUMENTS
+
     with optional_debugging(with_debugger=args.debug):
         if args.calc:
             calc_offsets(
@@ -722,6 +727,7 @@ def main():
                 path_offsets=args.offset_fn,
                 flight_numbers=args.flight_numbers,
                 only_compute_missing=not args.recalc,
+                instruments=instruments,
             )
 
         if args.process_with:
@@ -729,7 +735,7 @@ def main():
                 source_date=args.source_date,
                 path_offsets=args.offset_fn,
                 offset_source=args.process_with,
-                instruments=ALL_INSTRUMENTS,
+                instruments=instruments,
                 ceda_revision=args.ceda_revision,
                 flight_numbers=args.flight_numbers,
             )
