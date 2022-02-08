@@ -29,6 +29,7 @@ import pandas as pd
 import seaborn as sns
 import xarray as xr
 import yaml
+import parse
 from cfchecker.cfchecks import CFChecker, CFVersion, getargs
 from tqdm import tqdm
 
@@ -61,13 +62,22 @@ CEDA_NAME_MAPPING = dict(
     masin="core-masin",
 )
 
+MPHYS_FILENAME_FORMAT = "to{flight_number}_{instrument}_r{revision}.nc"
 
-def make_mphys_path(source_date, flight_number, instrument, kind):
+def make_mphys_path(source_date, flight_number, instrument, kind, revision):
+    """
+    revision == '*': load any revision available, but ensure only one revision exists in source dir
+    """
     path_root = Path("/gws/nopw/j04/eurec4auk/data/obs/mphys")
-    return (
-        path_root
-        / f"{kind}/{source_date}/{instrument}/nc_output/to{flight_number}_{instrument}_r1.nc"
-    )
+    data_root = path_root / f"{kind}/{source_date}/{instrument}/nc_output"
+    fn = MPHYS_FILENAME_FORMAT.format(flight_number=flight_number, instrument=instrument, revision=revision)
+    if kind == "source":
+        fpaths = list(data_root.glob(fn))
+        if len(fpaths) != 1:
+            raise FileNotFoundError(fpaths)
+        return fpaths[0]
+    else:
+        return data_root / fn
 
 
 def make_ceda_filepath(
@@ -246,12 +256,15 @@ def load_cffixed_mphys_ds(flight_number, source_date, instrument):
         flight_number=flight_number,
         instrument=instrument,
         kind="source",
+        revision="*",
     )
+    revision = parse.parse(MPHYS_FILENAME_FORMAT, path_src.name)["revision"]
     path_cffixed = make_mphys_path(
         source_date=source_date,
         flight_number=flight_number,
         instrument=instrument,
         kind="cf-fixed",
+        revision=revision
     )
 
     if not path_cffixed.exists():
@@ -299,7 +312,8 @@ def load_cffixed_mphys_ds(flight_number, source_date, instrument):
 
 
 def load_masin_ds(flight_number, version="0.7"):
-    path_masin = f"/gws/nopw/j04/eurec4auk/public/data/obs/MASIN/EUREC4A_TO-{flight_number}_MASIN-1Hz_*_v{version}.nc"
+    # path_masin = f"/gws/nopw/j04/eurec4auk/public/data/obs/MASIN/EUREC4A_TO-{flight_number}_MASIN-1Hz_*_v{version}.nc"
+    path_masin = f"/gws/nopw/j04/eurec4auk/data/obs/flight{flight_number}/MASIN/EUREC4A_TO-{flight_number}_MASIN-1Hz_*_v{version}.nc"
     ds = xr.open_mfdataset(path_masin).rename(dict(Time="time"))
     del ds.time.encoding["units"]
     assert np.unique(ds.time, return_counts=True)[1].max() == 1
@@ -669,7 +683,11 @@ def process_with_selected_offsets(
                     instrument=instrument,
                     source_date=source_date,
                 )
-            except (FileNotFoundError, EmptyFileException):
+            except EmptyFileException:
+                warnings.warn(f"empty file found for {flight_number} {instrument} ({source_date})")
+                continue
+            except FileNotFoundError:
+                warnings.warn(f"no file found for {flight_number} {instrument} ({source_date})")
                 continue
 
             da_masin_window, _ = extract_over_window(
