@@ -23,22 +23,38 @@ DATAFILE_PATH = "flight{flight_num}/{instrument}"
 EUREC4A_FILE_FORMAT = "EUREC4A_{platform_id}_{instrument_id}_{time_id}_{version_id}.nc"
 EUREC4A_REF_TIME = datetime(year=2020, month=1, day=1, hour=0, minute=0, second=0)
 
+ALL_FLIGHT_NUMBERS = range(330, 355)
 
-def _find_source_files(source_dir, instrument):
+def _find_source_files(source_dir, flight_num, instrument, freq):
     if instrument in DATAFILE_FORMAT:
         # ignore the revision info in the file name
-        fn_pattern = DATAFILE_FORMAT[instrument].format(flight_num="*", date="*", rev="*", freq="*")
-        return list(source_dir.glob(fn_pattern))
+        instrument_path = DATAFILE_PATH.format(flight_num=flight_num, instrument=instrument)
+        fn_pattern = DATAFILE_FORMAT[instrument].format(flight_num=flight_num, date="*", rev="*", freq=freq)
+        fullpath = source_dir / instrument_path
+        return list(fullpath.glob(fn_pattern))
     else:
         raise NotImplementedError(instrument)
 
 
-def main(source_dir, version, instrument, changelog, dry_run):
+def main(source_dir, version, changelog, dry_run):
+    instrument = "MASIN"
+    freq = "1"
     t_now = datetime.now()
-    files = _find_source_files(source_dir=source_dir, instrument=instrument)
-    print(f"Found {len(files)} files")
+    
+    for flight_num in ALL_FLIGHT_NUMBERS:
+        files = _find_source_files(source_dir=source_dir, instrument=instrument, flight_num=flight_num, freq=freq)
 
-    for filepath in files:
+        if len(files) == 0:
+            raise Exception(f"Didn't find any files for flight {flight_num}")
+        elif len(files) > 1:
+            # get file with highest revision number
+            def _get_rev(fp):
+                return parse.parse(DATAFILE_FORMAT[instrument], fp.name)["rev"]
+            files = list(sorted(files, key=_get_rev))
+            filepath = files[-1]
+        else:
+            filepath = files[0]
+
         print(f"{filepath.name}:")
         r = parse.parse(DATAFILE_FORMAT[instrument], filepath.name)
 
@@ -125,7 +141,7 @@ def main(source_dir, version, instrument, changelog, dry_run):
     if dry_run:
         print(f"would add to CHANGELOG: {changelog_extra}")
     else:
-        with open("CHANGELOG.txt", "a") as fh:
+        with open("masin-processing/CHANGELOG.txt", "a") as fh:
             fh.write(changelog_extra)
 
 
@@ -140,9 +156,10 @@ if __name__ == "__main__":
     argparser = argparse.ArgumentParser()
     argparser.add_argument('source_dir', type=Path)
     argparser.add_argument('--version', required=True, type=version_str)
-    argparser.add_argument('--instrument', required=True)
     argparser.add_argument('--changelog', required=True)
     argparser.add_argument('--dry-run', action='store_true', default=False)
     args = argparser.parse_args()
+
+    print(f"Looking for files in {args.source_dir}")
 
     main(**dict(vars(args)))
