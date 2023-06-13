@@ -25,15 +25,54 @@ EUREC4A_REF_TIME = datetime(year=2020, month=1, day=1, hour=0, minute=0, second=
 
 ALL_FLIGHT_NUMBERS = range(330, 355)
 
-def _find_source_files(source_dir, flight_num, instrument, freq):
+def find_most_recent_revision_source_file(data_root, flight_num, instrument, freq):
     if instrument in DATAFILE_FORMAT:
         # ignore the revision info in the file name
         instrument_path = DATAFILE_PATH.format(flight_num=flight_num, instrument=instrument)
         fn_pattern = DATAFILE_FORMAT[instrument].format(flight_num=flight_num, date="*", rev="*", freq=freq)
-        fullpath = source_dir / instrument_path
-        return list(fullpath.glob(fn_pattern))
+        fullpath = data_root / instrument_path
+        
+        filepaths = list(fullpath.glob(fn_pattern))
+        if len(filepaths) == 0:
+            raise Exception(f"Didn't find any files for flight {flight_num}")
+        elif len(filepaths) > 1:
+            # get file with highest revision number
+            def _get_rev(fp):
+                return parse.parse(DATAFILE_FORMAT[instrument], fp.name)["rev"]
+            filepaths = list(sorted(filepaths, key=_get_rev))
+            filepath = filepaths[-1]
+        else:
+            filepath = filepaths[0]
+        return filepath
     else:
         raise NotImplementedError(instrument)
+    
+def find_most_recent_processed_version(data_root, flight_num, instrument, freq):
+    time_id = "*"
+    platform_id = f"TO-{flight_num}"
+    instrument_id = f"{instrument}-{freq}Hz"
+    fn_new = EUREC4A_FILE_FORMAT.format(
+        platform_id=platform_id,
+        instrument_id=instrument_id,
+        time_id=time_id,
+        version_id="*",
+    )
+    flight_datapath = Path(data_root) / DATAFILE_PATH.format(instrument=instrument, flight_num=flight_num)
+    print(f"Looking in {flight_datapath} for {fn_new}")
+    filepaths = list(flight_datapath.glob(fn_new))
+
+    if len(filepaths) == 0:
+        raise Exception(f"Didn't find any files for flight {flight_num}")
+    elif len(filepaths) > 1:
+        # get file with highest version number
+        def _get_version(fp):
+            return parse.parse(EUREC4A_FILE_FORMAT, fp.name)["version_id"]
+        filepaths = list(sorted(filepaths, key=_get_version))
+        filepath = filepaths[-1]
+    else:
+        filepath = filepaths[0]
+    return filepath
+    
 
 
 def main(source_dir, version, changelog, dry_run):
@@ -42,18 +81,8 @@ def main(source_dir, version, changelog, dry_run):
     t_now = datetime.now()
     
     for flight_num in ALL_FLIGHT_NUMBERS:
-        files = _find_source_files(source_dir=source_dir, instrument=instrument, flight_num=flight_num, freq=freq)
+        filepath = find_most_recent_revision_source_file(data_root=source_dir, instrument=instrument, flight_num=flight_num, freq=freq)
 
-        if len(files) == 0:
-            raise Exception(f"Didn't find any files for flight {flight_num}")
-        elif len(files) > 1:
-            # get file with highest revision number
-            def _get_rev(fp):
-                return parse.parse(DATAFILE_FORMAT[instrument], fp.name)["rev"]
-            files = list(sorted(files, key=_get_rev))
-            filepath = files[-1]
-        else:
-            filepath = files[0]
 
         print(f"{filepath.name}:")
         r = parse.parse(DATAFILE_FORMAT[instrument], filepath.name)
