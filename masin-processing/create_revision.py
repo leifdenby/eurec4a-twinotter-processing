@@ -41,6 +41,7 @@ def main(source_dir, version, instrument, changelog, dry_run):
     for filepath in files:
         print(f"{filepath.name}:")
         r = parse.parse(DATAFILE_FORMAT[instrument], filepath.name)
+
         ds = xr.open_dataset(filepath, decode_times=False)
 
         nc_rev = ds.attrs['Revision']
@@ -52,16 +53,27 @@ def main(source_dir, version, instrument, changelog, dry_run):
         print(f"  new version: {version_id}")
 
         if instrument == 'MASIN':
-            # correct o follow EUREC4A time reference
             time_units = ds.Time.attrs['units']
-            nc_tref = cfunits.Units(time_units).reftime
-            t_offset = EUREC4A_REF_TIME - nc_tref
-            if dry_run:
-                print(f"  would adjust reference time to 2020-01-01 00:00:00, by {t_offset} ({t_offset.total_seconds()}s)")
-                print(f"  current time units: {time_units}")
+            # ensure that time-spacing is constant
+            dt_all = np.diff(ds.Time.values)
+            assert dt_all.max() == dt_all.min()
+            # correct o follow EUREC4A time reference
+            if "milliseconds" in time_units:
+                # do nothing, can't count milliseconds as 32bit ints from
+                # 2020-01-01 because we overflow on 2020-01-25
+                pass
             else:
-                ds.Time.values -= int(t_offset.total_seconds())
-                ds.Time.attrs['units'] = 'seconds since 2020-01-01 00:00:00 +0000 UTC'
+                nc_tref = cfunits.Units(time_units).reftime
+                t_offset = EUREC4A_REF_TIME - nc_tref
+                if dry_run:
+                    print(f"  would adjust reference time to 2020-01-01 00:00:00, by {t_offset} ({t_offset.total_seconds()}s)")
+                    print(f"  current time units: {time_units}")
+                else:
+                    ds.Time.values -= int(t_offset.total_seconds())
+                    ds.Time.attrs['units'] = EUREC4A_REF_TIME.strftime(
+                        'seconds since %Y-%m-%d %H:%M:%S +0000 UTC'
+                    )
+
 
             old_rev_info = f"filename: `{filename_rev}`, nc-attrs: `{nc_rev}`"
             history_s = f"version created by Leif Denby {t_now.isoformat()}, existing revision info: {old_rev_info} from file: `{filepath.name}`"
@@ -72,7 +84,7 @@ def main(source_dir, version, instrument, changelog, dry_run):
             else:
                 ds.attrs['version'] = version_id
                 ds.attrs['history'] = history_s
-                ds.attrs['contact'] = "Tom Lachlan-Cope <tlc@bas.ac.uk>"
+                ds.attrs['contact'] = "Tom Lachlan-Cope <tlc@bas.ac.uk>, Leif Denby <l.c.denby@leeds.ac.uk>"
                 ds.attrs['acknowledgement'] = "TO NOT USE FOR PUBLICATION! EARLY-RELEASE DATA"
                 del ds.attrs['Revision']
 
@@ -83,6 +95,8 @@ def main(source_dir, version, instrument, changelog, dry_run):
                     ds[v].attrs['units'] = "1"
             # make time the main coordinate
             ds = ds.swap_dims(dict(data_point='Time'))
+
+            ds.attrs['flight_number'] = r['flight_num']
 
             date_filename = datetime.strptime(r['date'], DATE_FORMAT[instrument])
             time_id = date_filename.strftime(DATE_FORMAT['EUREC4A'])
@@ -95,6 +109,8 @@ def main(source_dir, version, instrument, changelog, dry_run):
                 version_id=version_id,
             )
             p_out = Path(DATAFILE_PATH.format(instrument=instrument, flight_num=r['flight_num']))/fn_new
+            if p_out.exists():
+                raise Exception(f"`{p_out}` exists, aborting")
             if dry_run:
                 print(f"  would write to {p_out}")
             else:
