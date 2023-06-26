@@ -1,3 +1,6 @@
 flight*/
 ingest/
 .*DS_Store
+*.pyc
+.pdm-python
+incoming/

@@ -28,3 +28,7 @@ fixed 50Hz MASIN time units
 Added missing time-coordinate value for MASIN data on flight 338 (previously
 these were missing after ~20% into flight). Replaced vertical velocity for
 flight 348 with measurements by second IMU.
+
+
+# 2023-06-26 v0.8
+Correct for -2.0 scaling error in radar altitude variable (HGT_RADR1) and create composite altitude variable from GPS and RADAR which measures height relative to ocean

@@ -72,7 +72,47 @@ def find_most_recent_processed_version(data_root, flight_num, instrument, freq):
     else:
         filepath = filepaths[0]
     return filepath
-    
+
+def _correct_radar_alt_and_create_composite_alt(ds):
+    """
+    Correct radar altitude measurements (HGT_RADR1) which were previously
+    scaled by -2.0 and add composite variable using radar and gps altitude to
+    produce height above ocean (ALT_COMPOSITE)
+    """
+    z_threshold = 500
+
+    if "corrected" not in ds.HGT_RADR1.attrs.get("notes", ""):
+        # correct radar altitude
+        attrs = ds.HGT_RADR1.attrs
+        ds["HGT_RADR1"] = -2.0 * ds.HGT_RADR1
+        ds.HGT_RADR1.attrs.update(attrs)
+        ds.HGT_RADR1.attrs["notes"] = "corrected -2.0 scaling error from instrument output"
+
+    # find points where TO was flying low-level east of Barbados
+    ds_lowlevel_ocean = (
+        ds.where(ds.HGT_RADR1 > 50.0)
+        .where(ds.HGT_RADR1 < z_threshold)
+        .where(ds.LON_OXTS > -59.4)
+    )
+
+    # compute mean altitude offset between the radar altitude and GPS altitude for these points
+    da_ocean_offset = (ds_lowlevel_ocean.ALT_OXTS - ds_lowlevel_ocean.HGT_RADR1).mean(
+        skipna=True
+    )
+
+    # create a altitude composite using the radar altitude when below 400m
+    # otherwise use the offset GPS altitude
+    ds["ALT_OXTS_OFFSET"] = ds.ALT_OXTS - da_ocean_offset
+    ds.ALT_OXTS_OFFSET.attrs["units"] = "m"
+    ds.ALT_OXTS_OFFSET.attrs[
+        "long_name"
+    ] = f"{ds.ALT_OXTS.long_name} offset with radar below {z_threshold}m altitude to measure ocean-relative height"
+
+    ds["ALT_COMPOSITE"] = ds.HGT_RADR1.where(ds.HGT_RADR1 < z_threshold, ds.ALT_OXTS_OFFSET)
+    ds.ALT_COMPOSITE.attrs["units"] = "m"
+    ds.ALT_COMPOSITE.attrs[
+        "long_name"
+    ] = "altitude relative to ocean surface (radar + gps composite)"
 
 
 def main(source_dir, version, changelog, dry_run):
@@ -118,7 +158,11 @@ def main(source_dir, version, changelog, dry_run):
                     ds.Time.attrs['units'] = EUREC4A_REF_TIME.strftime(
                         'seconds since %Y-%m-%d %H:%M:%S +0000 UTC'
                     )
-
+                    
+            if dry_run:
+                print("  would correct HGT_RADR1 and add composite altitude ALT_COMPOSITE")
+            else:
+                _correct_radar_alt_and_create_composite_alt(ds=ds)
 
             old_rev_info = f"filename: `{filename_rev}`, nc-attrs: `{nc_rev}`"
             history_s = f"version created by Leif Denby {t_now.isoformat()}, existing revision info: {old_rev_info} from file: `{filepath.name}`"
@@ -135,7 +179,12 @@ def main(source_dir, version, changelog, dry_run):
 
             # fixes for masin data
             for v in ds.data_vars:
-                if type(ds[v].attrs['units']) == np.int8 and ds[v].attrs['units'] == 1:
+                if not "units" in ds[v].attrs:
+                    if v in ["Time"]:
+                        pass
+                    else:
+                        raise Exception(v, ds[v])
+                elif type(ds[v].attrs['units']) == np.int8 and ds[v].attrs['units'] == 1:
                     # should be string, not a number
                     ds[v].attrs['units'] = "1"
             # make time the main coordinate
@@ -170,7 +219,7 @@ def main(source_dir, version, changelog, dry_run):
     if dry_run:
         print(f"would add to CHANGELOG: {changelog_extra}")
     else:
-        with open("masin-processing/CHANGELOG.txt", "a") as fh:
+        with open("masin_processing/CHANGELOG.txt", "a") as fh:
             fh.write(changelog_extra)
 
 
