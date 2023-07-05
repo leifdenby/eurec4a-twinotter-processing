@@ -27,6 +27,8 @@ find flight*/MASIN/ -wholename "*MASIN*_${1}.nc" -exec ln -s $CWD/{} $PUB_PATH/M
 echo "public datasets (in ${PUB_PATH}):"
 find $PUB_PATH/MASIN/ -wholename "*MASIN*_${1}.nc" -exec echo {} \;
 
+cp masin_processing/CHANGELOG.txt $PUB_PATH/MASIN
+
 
 
 # todo: make symlinks to revision files and changelog and copy to public dir

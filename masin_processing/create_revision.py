@@ -113,103 +113,107 @@ def _correct_radar_alt_and_create_composite_alt(ds):
     ds.ALT_COMPOSITE.attrs[
         "long_name"
     ] = "altitude relative to ocean surface (radar + gps composite)"
-
-
-def main(source_dir, version, changelog, dry_run):
-    instrument = "MASIN"
-    freq = "1"
-    t_now = datetime.now()
     
-    for flight_num in ALL_FLIGHT_NUMBERS:
-        filepath = find_most_recent_revision_source_file(data_root=source_dir, instrument=instrument, flight_num=flight_num, freq=freq)
+def _process_flight(source_dir, instrument, flight_num, freq, version_id, dry_run, t_now):
+    filepath = find_most_recent_revision_source_file(data_root=source_dir, instrument=instrument, flight_num=flight_num, freq=freq)
 
+    print(f"{filepath.name}:")
+    r = parse.parse(DATAFILE_FORMAT[instrument], filepath.name)
 
-        print(f"{filepath.name}:")
-        r = parse.parse(DATAFILE_FORMAT[instrument], filepath.name)
+    ds = xr.open_dataset(filepath, decode_times=False)
 
-        ds = xr.open_dataset(filepath, decode_times=False)
+    nc_rev = ds.attrs['Revision']
+    filename_rev = r['rev']
+    print(f"  exising revision info")
+    print(f"    filename: {filename_rev}")
+    print(f"    nc-attrs: {nc_rev}")
+    print(f"  new version: {version_id}")
 
-        nc_rev = ds.attrs['Revision']
-        filename_rev = r['rev']
-        version_id = f"v{version}"
-        print(f"  exising revision info")
-        print(f"    filename: {filename_rev}")
-        print(f"    nc-attrs: {nc_rev}")
-        print(f"  new version: {version_id}")
-
-        if instrument == 'MASIN':
-            time_units = ds.Time.attrs['units']
-            # ensure that time-spacing is constant
-            dt_all = np.diff(ds.Time.values)
-            assert dt_all.max() == dt_all.min()
-            # correct o follow EUREC4A time reference
-            if "milliseconds" in time_units:
-                # do nothing, can't count milliseconds as 32bit ints from
-                # 2020-01-01 because we overflow on 2020-01-25
-                pass
+    if instrument == 'MASIN':
+        time_units = ds.Time.attrs['units']
+        # ensure that time-spacing is constant
+        dt_all = np.diff(ds.Time.values)
+        assert dt_all.max() == dt_all.min()
+        # correct o follow EUREC4A time reference
+        if "milliseconds" in time_units:
+            # do nothing, can't count milliseconds as 32bit ints from
+            # 2020-01-01 because we overflow on 2020-01-25
+            pass
+        else:
+            nc_tref = cfunits.Units(time_units).reftime
+            t_offset = EUREC4A_REF_TIME - nc_tref
+            if dry_run:
+                print(f"  would adjust reference time to 2020-01-01 00:00:00, by {t_offset} ({t_offset.total_seconds()}s)")
+                print(f"  current time units: {time_units}")
             else:
-                nc_tref = cfunits.Units(time_units).reftime
-                t_offset = EUREC4A_REF_TIME - nc_tref
-                if dry_run:
-                    print(f"  would adjust reference time to 2020-01-01 00:00:00, by {t_offset} ({t_offset.total_seconds()}s)")
-                    print(f"  current time units: {time_units}")
-                else:
-                    ds.Time.values -= int(t_offset.total_seconds())
-                    ds.Time.attrs['units'] = EUREC4A_REF_TIME.strftime(
-                        'seconds since %Y-%m-%d %H:%M:%S +0000 UTC'
-                    )
-                    
+                ds.Time.values -= int(t_offset.total_seconds())
+                ds.Time.attrs['units'] = EUREC4A_REF_TIME.strftime(
+                    'seconds since %Y-%m-%d %H:%M:%S +0000 UTC'
+                )
+                
+    
+        if "HGT_RADR1" in ds:
             if dry_run:
                 print("  would correct HGT_RADR1 and add composite altitude ALT_COMPOSITE")
             else:
                 _correct_radar_alt_and_create_composite_alt(ds=ds)
 
-            old_rev_info = f"filename: `{filename_rev}`, nc-attrs: `{nc_rev}`"
-            history_s = f"version created by Leif Denby {t_now.isoformat()}, existing revision info: {old_rev_info} from file: `{filepath.name}`"
-            if dry_run:
-                print(f"  would set ds.attrs['version'] = {version_id}")
-                print(f"  would set ds.attrs['history'] = {history_s}")
-                print(f"  would delete ds.attrs['Revision']")
-            else:
-                ds.attrs['version'] = version_id
-                ds.attrs['history'] = history_s
-                ds.attrs['contact'] = "Tom Lachlan-Cope <tlc@bas.ac.uk>, Leif Denby <l.c.denby@leeds.ac.uk>"
-                ds.attrs['acknowledgement'] = "TO NOT USE FOR PUBLICATION! EARLY-RELEASE DATA"
-                del ds.attrs['Revision']
+        old_rev_info = f"filename: `{filename_rev}`, nc-attrs: `{nc_rev}`"
+        history_s = f"version created by Leif Denby {t_now.isoformat()}, existing revision info: {old_rev_info} from file: `{filepath.name}`"
+        if dry_run:
+            print(f"  would set ds.attrs['version'] = {version_id}")
+            print(f"  would set ds.attrs['history'] = {history_s}")
+            print(f"  would delete ds.attrs['Revision']")
+        else:
+            ds.attrs['version'] = version_id
+            ds.attrs['history'] = history_s
+            ds.attrs['contact'] = "Tom Lachlan-Cope <tlc@bas.ac.uk>, Leif Denby <l.c.denby@leeds.ac.uk>"
+            ds.attrs['acknowledgement'] = "TO NOT USE FOR PUBLICATION! EARLY-RELEASE DATA"
+            del ds.attrs['Revision']
 
-            # fixes for masin data
-            for v in ds.data_vars:
-                if not "units" in ds[v].attrs:
-                    if v in ["Time"]:
-                        pass
-                    else:
-                        raise Exception(v, ds[v])
-                elif type(ds[v].attrs['units']) == np.int8 and ds[v].attrs['units'] == 1:
-                    # should be string, not a number
-                    ds[v].attrs['units'] = "1"
-            # make time the main coordinate
-            ds = ds.swap_dims(dict(data_point='Time'))
+        # fixes for masin data
+        for v in ds.data_vars:
+            if not "units" in ds[v].attrs:
+                if v in ["Time"]:
+                    pass
+                else:
+                    raise Exception(v, ds[v])
+            elif type(ds[v].attrs['units']) == np.int8 and ds[v].attrs['units'] == 1:
+                # should be string, not a number
+                ds[v].attrs['units'] = "1"
+        # make time the main coordinate
+        ds = ds.swap_dims(dict(data_point='Time'))
 
-            ds.attrs['flight_number'] = r['flight_num']
+        ds.attrs['flight_number'] = r['flight_num']
 
-            date_filename = datetime.strptime(r['date'], DATE_FORMAT[instrument])
-            time_id = date_filename.strftime(DATE_FORMAT['EUREC4A'])
-            platform_id = f"TO-{r['flight_num']}"
-            instrument_id = f"{instrument}-{r['freq']}Hz"
-            fn_new = EUREC4A_FILE_FORMAT.format(
-                platform_id=platform_id,
-                instrument_id=instrument_id,
-                time_id=time_id,
-                version_id=version_id,
-            )
-            p_out = Path(DATAFILE_PATH.format(instrument=instrument, flight_num=r['flight_num']))/fn_new
-            if p_out.exists():
-                raise Exception(f"`{p_out}` exists, aborting")
-            if dry_run:
-                print(f"  would write to {p_out}")
-            else:
-                ds.to_netcdf(p_out)
-        print(flush=True)
+        date_filename = datetime.strptime(r['date'], DATE_FORMAT[instrument])
+        time_id = date_filename.strftime(DATE_FORMAT['EUREC4A'])
+        platform_id = f"TO-{r['flight_num']}"
+        instrument_id = f"{instrument}-{r['freq']}Hz"
+        fn_new = EUREC4A_FILE_FORMAT.format(
+            platform_id=platform_id,
+            instrument_id=instrument_id,
+            time_id=time_id,
+            version_id=version_id,
+        )
+        p_out = Path(DATAFILE_PATH.format(instrument=instrument, flight_num=r['flight_num']))/fn_new
+        if p_out.exists():
+            raise Exception(f"`{p_out}` exists, aborting")
+        if dry_run:
+            print(f"  would write to {p_out}")
+        else:
+            ds.to_netcdf(p_out)
+    print(flush=True)
+
+
+def main(source_dir, version, changelog, dry_run):
+    instrument = "MASIN"
+    t_now = datetime.now()
+    version_id = f"v{version}"
+    
+    for flight_num in ALL_FLIGHT_NUMBERS:
+        for freq in ["1", "50"]:
+            _process_flight(source_dir=source_dir, instrument=instrument, flight_num=flight_num, freq=freq, version_id=version_id, dry_run=dry_run, t_now=t_now)
 
     changelog_extra = f"""
 

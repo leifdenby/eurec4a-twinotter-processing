@@ -31,4 +31,6 @@ flight 348 with measurements by second IMU.
 
 
 # 2023-06-26 v0.8
-Correct for -2.0 scaling error in radar altitude variable (HGT_RADR1) and create composite altitude variable from GPS and RADAR which measures height relative to ocean
+Correct for -2.0 scaling error in radar altitude variable (HGT_RADR1) and
+create composite altitude variable (ALT_COMPOSITE) from GPS and RADAR which
+measures height relative to ocean
